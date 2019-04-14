@@ -23,6 +23,11 @@ typedef struct {
 	char data[PING_PKT_SZ - sizeof(struct icmp)];
 } ping_pkt_t;
 
+typedef struct {
+	struct ip ip_hdr;
+	ping_pkt_t ping_pkt;
+} ip_pkt_t;
+
 /* _ping - Check the availability of the communication partner with a ping request.
  * ip - IP address of the communication partner as string
  * timeout - Timeout in milliseconds to wait until reply
@@ -31,8 +36,6 @@ typedef struct {
 
 int _ping(devctl_ping_t* p)
 {
-
-	printf("_ping: ip=%s, timeout=%lu \n", p->args.ip, p->args.timeout);
 	int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
 
 	struct sockaddr_in addr_con;
@@ -45,27 +48,19 @@ int _ping(devctl_ping_t* p)
 
 	int i = 0;
 	for(; i < sizeof(ping_pkt.data) - 1; ++i) {
-		ping_pkt.data[i] = i + '0';
+		ping_pkt.data[i] = i + 'a';
 	}
 	ping_pkt.data[i] = 0;
 
-	ping_pkt.hdr.icmp_type = ICMP_ECHO;
 	srand(time(NULL));
-	int random_id = rand();
+	const short random_id = rand();
+	ping_pkt.hdr.icmp_type = ICMP_ECHO;
 	ping_pkt.hdr.icmp_hun.ih_idseq.icd_id = random_id;
 	ping_pkt.hdr.icmp_hun.ih_idseq.icd_seq = 0;
 	ping_pkt.hdr.icmp_cksum = checksum(&ping_pkt, sizeof(ping_pkt));
 
 	struct timespec time_start, time_end;
 	clock_gettime(CLOCK_MONOTONIC, &time_start);
-
-	/* This parameter should be set for SOL_IP, but in QNX this parameter is not defined
-	    int ttl_val = 64;
-	    if(setsockopt(sock, SOL_SOCKET, IP_TTL, &ttl_val, sizeof(ttl_val))) {
-	    	printf("Setting socket TTL failed \n");
-	    	return 1;
-	    }
-	 */
 
 	unsigned long wait_time_ms = p->args.timeout;
 	struct timespec wait_time;
@@ -74,29 +69,36 @@ int _ping(devctl_ping_t* p)
 	if(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &wait_time, sizeof(wait_time))) {
 		perror("Setting socket wait time failed \n");
 		p->result.return_ = 1;
-		return 0;
+		return sizeof(p->result);
 	}
 
 	if(sendto(sock, &ping_pkt, PING_PKT_SZ, 0, (struct sockaddr*)&addr_con, socklen) <= 0) {
 		printf("Send echo failed \n");
 		p->result.return_ = 1;
-		return 0;
+		return sizeof(p->result);
 	}
 
+	ip_pkt_t ip_pkt;
 	struct sockaddr_in r_addr;
-	if(recvfrom(sock,  &ping_pkt, PING_PKT_SZ, 0, (struct sockaddr*)&r_addr, &socklen) <= 0) {
+	if(recvfrom(sock,  &ip_pkt, sizeof(ip_pkt), 0, (struct sockaddr*)&r_addr, &socklen) <= 0) {
 		perror("Get reply failed \n");
 		p->result.return_ = 1;
-		return 0;
+		return sizeof(p->result);
 	}
 
 	clock_gettime(CLOCK_MONOTONIC, &time_end);
+
+	if(ip_pkt.ping_pkt.hdr.icmp_hun.ih_idseq.icd_id != random_id) {
+		perror("Reply and request IDs is not equal \n");
+		p->result.return_ = 1;
+		return sizeof(p->result);
+	}
 
 	const unsigned long start_time_ms = time_start.tv_sec * 1000 + (time_start.tv_nsec / 1000000);
 	const unsigned long end_time_ms = time_end.tv_sec * 1000 + (time_end.tv_nsec / 1000000);
 	p->result.reply_time = end_time_ms - start_time_ms;
 	p->result.return_ = 0;
-	printf("_ping return: ip=%s, reply_time=%lu \n", p->args.ip, p->result.reply_time);
+
 	return sizeof(p->result);
 }
 
