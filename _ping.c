@@ -28,6 +28,7 @@ typedef struct {
 	ping_pkt_t ping_pkt;
 } ip_pkt_t;
 
+int ping(const char* ip, const ulong timeout, ulong* reply_time);
 bool set_socket_rcv_timeout(int sock, const unsigned long timeout);
 bool receive_ping_pkt(int sock, ip_pkt_t* ip_pkt, const unsigned long timeout);
 bool send_ping_pkt(int sock, const char* ip, ping_pkt_t* ping_pkt);
@@ -36,25 +37,39 @@ void prepare_icmp_pkt(ping_pkt_t *ping_pkt);
 unsigned long get_cur_time_ms();
 unsigned short checksum(void *b, int len);
 
-/* _ping - Check the availability of the communication partner with a ping request.
- */
 int _ping(devctl_ping_t* p)
 {
 	char ip[IPSTR_MAXLEN];
 	strcpy(ip, p->args.ip);
-	unsigned long timeout = p->args.timeout;
-	p->result.return_ = 1;
+	const ulong timeout = p->args.timeout;
+	p->result.reply_time = 0;
+	p->result.return_ = ping(ip, timeout, &p->result.reply_time);
+	return sizeof(p->result);
+}
+
+/* _ping - Check the availability of the communication partner with a ping request.
+ * result:
+ * * -1 - failed
+ * *  0 - ok
+ * *  1 - timeout
+ */
+int ping(const char* ip, const ulong timeout, ulong* reply_time)
+{
+	int result = -1;
+	if (ip == NULL) {
+		return result;
+	}
 
 	int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
 	if(sock == -1) {
-		p->result.return_ = 1;
-		return sizeof(p->result);
+		return result;
 	}
 
 	ping_pkt_t ping_pkt;
 	prepare_icmp_pkt(&ping_pkt);
 	const short reply_id = ping_pkt.hdr.icmp_hun.ih_idseq.icd_id;
 	const unsigned long start_time_ms = get_cur_time_ms();
+	ulong rtime = 0;
 
 	if(send_ping_pkt(sock, ip, &ping_pkt)) {
 		ip_pkt_t ip_pkt;
@@ -62,14 +77,18 @@ int _ping(devctl_ping_t* p)
 			const unsigned long end_time_ms = get_cur_time_ms();
 			const short request_id = ip_pkt.ping_pkt.hdr.icmp_hun.ih_idseq.icd_id;
 			if(request_id == reply_id) {
-				p->result.reply_time = end_time_ms - start_time_ms;
-				p->result.return_ = 0;
+				rtime = end_time_ms - start_time_ms;
+				result = (rtime > timeout) ? 1 : 0;
 			}
 		}
 	}
-
 	close(sock);
-	return sizeof(p->result);
+
+	if (reply_time != NULL) {
+		*reply_time = rtime;
+	}
+
+	return result;
 }
 
 
