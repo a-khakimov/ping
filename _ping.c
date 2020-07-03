@@ -5,175 +5,166 @@
  *      Author: a.khakimov
  */
 
-#include "proto.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/time.h>
+#include <time.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <string.h>
+#include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/ip_icmp.h>
 
 
-#define PING_PKT_DATA_SZ 	32
+#define PING_PKT_DATA_SZ    64
+#define _err_ok             0
+#define _err_failed         -1
+#define _err_timeout        1
 
 typedef struct {
-	struct icmp hdr;
-	char data[PING_PKT_DATA_SZ];
+    struct icmp hdr;
+    char data[PING_PKT_DATA_SZ];
 } ping_pkt_t;
 
 typedef struct {
-	struct ip ip_hdr;
-	ping_pkt_t ping_pkt;
+    struct ip ip_hdr;
+    ping_pkt_t ping_pkt;
 } ip_pkt_t;
 
-int ping(const char* ip, const ulong timeout, ulong* reply_time);
-bool set_socket_rcv_timeout(int sock, const unsigned long timeout);
-bool receive_ping_pkt(int sock, ip_pkt_t* ip_pkt, const unsigned long timeout);
-bool send_ping_pkt(int sock, const char* ip, ping_pkt_t* ping_pkt);
+static void   prepare_icmp_pkt  (ping_pkt_t *ping_pkt                                    );
+static ulong  get_cur_time_ms   (                                                        );
+static ushort checksum          (void *b, int len                                        );
 
-void prepare_icmp_pkt(ping_pkt_t *ping_pkt);
-unsigned long get_cur_time_ms();
-unsigned short checksum(void *b, int len);
-
-int _ping(devctl_ping_t* p)
-{
-	char ip[IPSTR_MAXLEN];
-	strcpy(ip, p->args.ip);
-	const ulong timeout = p->args.timeout;
-	p->result.reply_time = 0;
-	p->result.return_ = ping(ip, timeout, &p->result.reply_time);
-	return sizeof(p->result);
-}
 
 /* _ping - Check the availability of the communication partner with a ping request.
  * result:
- * * -1 - failed
- * *  0 - ok
- * *  1 - timeout
+ * * _err_ok(0)
+ * * _err_failed(-1)
+ * * _err_timeout(1)
  */
 int ping(const char* ip, const ulong timeout, ulong* reply_time)
 {
-	int result = -1;
-	if (ip == NULL) {
-		return result;
-	}
+    if (ip == NULL || timeout == 0) {
+        return _err_failed;
+    }
 
-	int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-	if(sock == -1) {
-		return result;
-	}
+    ping_pkt_t ping_pkt;
+    prepare_icmp_pkt(&ping_pkt);
+    const short reply_id = ping_pkt.hdr.icmp_hun.ih_idseq.icd_id;
 
-	ping_pkt_t ping_pkt;
-	prepare_icmp_pkt(&ping_pkt);
-	const short reply_id = ping_pkt.hdr.icmp_hun.ih_idseq.icd_id;
-	const unsigned long start_time_ms = get_cur_time_ms();
-	ulong rtime = 0;
+    struct sockaddr_in to_addr;
+    to_addr.sin_family = AF_INET;
+    if (!inet_aton(ip, (struct in_addr*)&to_addr.sin_addr.s_addr)) {
+        return _err_failed;
+    }
 
-	if(send_ping_pkt(sock, ip, &ping_pkt)) {
-		ip_pkt_t ip_pkt;
-		if(receive_ping_pkt(sock, &ip_pkt, timeout)) {
-			const unsigned long end_time_ms = get_cur_time_ms();
-			const short request_id = ip_pkt.ping_pkt.hdr.icmp_hun.ih_idseq.icd_id;
-			if(request_id == reply_id) {
-				rtime = end_time_ms - start_time_ms;
-				result = (rtime > timeout) ? 1 : 0;
-			}
-		}
-	}
-	close(sock);
+    if (!strcmp(ip, "255.255.255.255") || to_addr.sin_addr.s_addr == 0xFFFFFFFF) {
+        return _err_failed;
+    }
 
-	if (reply_time != NULL) {
-		*reply_time = rtime;
-	}
+    const int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (sock < 0) {
+        return _err_failed;
+    }
 
-	return result;
+    const ulong start_time_ms = get_cur_time_ms();
+    const socklen_t socklen = sizeof(struct sockaddr_in);
+    if (sendto(sock, &ping_pkt, sizeof(ping_pkt_t), 0, (struct sockaddr*)&to_addr, socklen) <= 0) {
+        close(sock);
+        return _err_failed;
+    }
+
+    int result = _err_failed;
+    struct timeval tv;
+    tv.tv_sec = timeout / 1000;
+    tv.tv_usec = (timeout % 1000) * 1000;
+
+    for (;;) {
+        fd_set rfd;
+        FD_ZERO(&rfd);
+        FD_SET(sock, &rfd);
+
+        int n = select(sock + 1, &rfd, 0, 0, &tv);
+        if (n == 0) {
+            result = _err_timeout;
+            break;
+        }
+        if (n < 0) {
+            break;
+        }
+        const ulong elapsed_time = (get_cur_time_ms() - start_time_ms);
+        if (elapsed_time > timeout) {
+            result = _err_timeout;
+            break;
+        } else {
+            const int new_timeout = timeout - elapsed_time;
+            tv.tv_sec = new_timeout / 1000;
+            tv.tv_usec = (new_timeout % 1000) * 1000;
+        }
+
+        if (FD_ISSET(sock, &rfd)) {
+            ip_pkt_t ip_pkt;
+            struct sockaddr_in from_addr;
+            socklen_t socklen = sizeof(struct sockaddr_in);
+            if (recvfrom(sock, &ip_pkt, sizeof(ip_pkt_t), 0, (struct sockaddr*)&from_addr, &socklen) <= 0) {
+                break;
+            }
+            if (to_addr.sin_addr.s_addr == from_addr.sin_addr.s_addr
+                    && reply_id == ip_pkt.ping_pkt.hdr.icmp_hun.ih_idseq.icd_id) {
+                if (reply_time != NULL) {
+                    *reply_time = elapsed_time;
+                }
+                result = _err_ok;
+                break;
+            }
+        }
+    }
+    close(sock);
+    return result;
 }
 
-
-bool set_socket_rcv_timeout(int sock, const unsigned long timeout)
+static void prepare_icmp_pkt(ping_pkt_t *ping_pkt)
 {
-	bool result = true;
-	unsigned long wait_time_ms = timeout;
-	struct timeval wait_time;
-	wait_time.tv_sec = wait_time_ms / 1000;
-	wait_time.tv_usec = (wait_time_ms % 1000) * 1000;
-	if(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &wait_time, sizeof(wait_time))) {
-		result = false;
-	}
-	return result;
+    memset(ping_pkt, 0, sizeof(ping_pkt_t));
+
+    int i = 0;
+    for (; i < sizeof(ping_pkt->data) - 1; ++i) {
+        ping_pkt->data[i] = i + 'a';
+    }
+    ping_pkt->data[i] = 0;
+
+    srand(time(NULL));
+    const short random_id = rand();
+    ping_pkt->hdr.icmp_type = ICMP_ECHO;
+    ping_pkt->hdr.icmp_hun.ih_idseq.icd_id = random_id;
+    ping_pkt->hdr.icmp_hun.ih_idseq.icd_seq = 0;
+    ping_pkt->hdr.icmp_cksum = checksum(ping_pkt, sizeof(ping_pkt_t));
 }
 
-bool receive_ping_pkt(int sock, ip_pkt_t* ip_pkt, const unsigned long timeout)
+static ulong get_cur_time_ms()
 {
-	bool result = true;
-	if(!set_socket_rcv_timeout(sock, timeout)) {
-		return (result = false);
-	}
-
-	struct sockaddr_in r_addr;
-	socklen_t socklen = sizeof(struct sockaddr_in);
-	if(recvfrom(sock,  ip_pkt, sizeof(ip_pkt_t), 0, (struct sockaddr*)&r_addr, &socklen) <= 0) {
-		result = false;
-	}
-	return result;
+    struct timespec time;
+    clock_gettime(CLOCK_MONOTONIC, &time);
+    ulong time_ms = time.tv_sec * 1000 + (time.tv_nsec / 1000000);
+    return time_ms;
 }
 
-bool send_ping_pkt(int sock, const char* ip, ping_pkt_t* ping_pkt)
+static ushort checksum(void *b, int len)
 {
-	bool result = true;
-	struct sockaddr_in addr_con;
-	addr_con.sin_family = AF_INET;
-	inet_aton(ip, (struct in_addr*) &addr_con.sin_addr.s_addr);
-	socklen_t socklen = sizeof(struct sockaddr_in);
+    ushort *buf = b;
+    uint sum=0;
+    ushort result;
 
-	if(sendto(sock, ping_pkt, sizeof(ping_pkt_t), 0, (struct sockaddr*)&addr_con, socklen) <= 0) {
-		result = false;
-	}
-	return result;
+    for (sum = 0; len > 1; len -= 2) {
+        sum += *buf++;
+    }
+    if (len == 1) {
+        sum += *(unsigned char*)buf;
+    }
+    sum = (sum >> 16) + (sum & 0xFFFF);
+    sum += (sum >> 16);
+    result = ~sum;
+    return result;
 }
-
-void prepare_icmp_pkt(ping_pkt_t *ping_pkt)
-{
-	memset(ping_pkt, 0, sizeof(ping_pkt_t));
-
-	int i = 0;
-	for(; i < sizeof(ping_pkt->data) - 1; ++i) {
-		ping_pkt->data[i] = i + 'a';
-	}
-	ping_pkt->data[i] = 0;
-
-	srand(time(NULL));
-	const short random_id = rand();
-	ping_pkt->hdr.icmp_type = ICMP_ECHO;
-	ping_pkt->hdr.icmp_hun.ih_idseq.icd_id = random_id;
-	ping_pkt->hdr.icmp_hun.ih_idseq.icd_seq = 0;
-	ping_pkt->hdr.icmp_cksum = checksum(ping_pkt, sizeof(ping_pkt_t));
-}
-
-unsigned long get_cur_time_ms()
-{
-	struct timespec time;
-	clock_gettime(CLOCK_MONOTONIC, &time);
-	unsigned long time_ms = time.tv_sec * 1000 + (time.tv_nsec / 1000000);
-	return time_ms;
-}
-
-unsigned short checksum(void *b, int len)
-{
-	unsigned short *buf = b;
-	unsigned int sum=0;
-	unsigned short result;
-
-	for ( sum = 0; len > 1; len -= 2 )
-		sum += *buf++;
-	if ( len == 1 )
-		sum += *(unsigned char*)buf;
-	sum = (sum >> 16) + (sum & 0xFFFF);
-	sum += (sum >> 16);
-	result = ~sum;
-	return result;
-}
-
-

@@ -1,9 +1,13 @@
-#ifndef _PING_H_
-#define _PING_H_
+/*
+ * ping.h
+ *
+ *  Created on: 30.06.2020
+ *      Author: a.khakimov
+ */
 
+#ifndef PING_H_
+#define PING_H_
 
+int	ping (const char* ip, const unsigned long timeout, unsigned long* reply_time);
 
-
-
-
-#endif // __PING_H_
+#endif /* PING_H_ */
