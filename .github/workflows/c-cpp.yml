@@ -25,4 +25,4 @@ jobs:
       - uses: actions/upload-artifact@v1
         with:
           name: ping.tar.gz
-          path: ping.tar.gz cppcheck_report.txt
+          path: ping.tar.gz
