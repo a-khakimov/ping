@@ -14,9 +14,9 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: make
-      run: make
+      run: make ping.tar.gz
 
     - uses: actions/upload-artifact@v1
       with:
-        name: ping
-        path: ping
+        name: ping.tar.gz
+        path: ping.tar.gz
