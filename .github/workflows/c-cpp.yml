@@ -10,18 +10,18 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
-
     steps:
-    - name: install pvs-studio
-      run: wget -q -O - https://files.viva64.com/etc/pubkey.txt | sudo apt-key add -
-           sudo wget -O /etc/apt/sources.list.d/viva64.list https://files.viva64.com/etc/viva64.list
+      - uses: actions/checkout@v2
+      - name: cppcheck
+        uses: deep5050/cppcheck-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN}}
 
-          
-    - uses: actions/checkout@v2
-    - name: make
-      run: make ping.tar.gz
+      - uses: actions/checkout@v2
+      - name: make
+        run: make ping.tar.gz
 
-    - uses: actions/upload-artifact@v1
-      with:
-        name: ping.tar.gz
-        path: ping.tar.gz
+      - uses: actions/upload-artifact@v1
+        with:
+          name: ping.tar.gz
+          path: ping.tar.gz
