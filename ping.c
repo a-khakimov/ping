@@ -57,6 +57,7 @@ int ping(const char* ip, const ulong timeout, ulong* reply_time)
     struct sockaddr_in to_addr;
     to_addr.sin_family = AF_INET;
     if (!inet_aton(ip, (struct in_addr*)&to_addr.sin_addr.s_addr)) {
+        printf("inet_aton\n");
         return _err_failed;
     }
 
@@ -66,6 +67,7 @@ int ping(const char* ip, const ulong timeout, ulong* reply_time)
 
     const int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sock < 0) {
+        printf("socket() %s\n", strerror(errno));
         return _err_failed;
     }
 

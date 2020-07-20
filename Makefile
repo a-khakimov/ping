@@ -1,5 +1,5 @@
 CC=gcc
-SOURCES=main.c _ping.c
+SOURCES=main.c ping.c
 CFLAGS=-c -Wall
 LDFLAGS=
 OBJECTS=$(SOURCES:.c=.o)
@@ -19,4 +19,5 @@ clean:
 
 install:
 
-
+ping.tar.gz: ping
+	tar czf ping.tar.gz ping
