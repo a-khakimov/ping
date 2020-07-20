@@ -1,0 +1,2 @@
+[ping.c:75] -> [ping.c:112]: (style) Local variable socklen shadows outer variable
+(information) Cppcheck cannot find all the include files (use --check-config for details)
