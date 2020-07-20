@@ -17,6 +17,7 @@ jobs:
         uses: deep5050/cppcheck-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN}}
+          output_file: cppcheck_report.txt
       
       - name: make
         run: make ping.tar.gz
@@ -24,4 +25,4 @@ jobs:
       - uses: actions/upload-artifact@v1
         with:
           name: ping.tar.gz
-          path: ping.tar.gz
+          path: ping.tar.gz cppcheck_report.txt
